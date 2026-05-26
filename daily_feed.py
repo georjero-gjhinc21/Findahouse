@@ -36,7 +36,6 @@ def geocode(address: str) -> tuple[float, float]:
     data = r.json()
     if not data:
         raise ValueError(f"Could not geocode address: {address!r}")
-    # Nominatim's fair-use policy: max 1 request/sec
     time.sleep(1.1)
     return float(data[0]["lat"]), float(data[0]["lon"])
 
@@ -59,44 +58,86 @@ def centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Property search (Zillow via RapidAPI)
+# Property search (US Real Estate via RapidAPI — by datascraper)
 # ---------------------------------------------------------------------------
 
-ZILLOW_HOST = "zillow-com1.p.rapidapi.com"
-ZILLOW_URL = f"https://{ZILLOW_HOST}/propertyExtendedSearch"
+API_HOST = "us-real-estate.p.rapidapi.com"
+API_URL = f"https://{API_HOST}/v3/for-sale"
+FREE_TIER_LIMIT = 42  # max results per page on the free plan
 
 def search_properties(location: str, min_beds: int, min_baths: int,
                       max_price: int | None, max_pages: int,
                       rapidapi_key: str) -> list[dict]:
-    """Search Zillow via RapidAPI. Returns a list of property dicts."""
+    """Search for-sale listings via the US Real Estate RapidAPI.
+
+    Returns a list of property dicts normalized to the field names the
+    rest of the pipeline expects (price, bedrooms, livingArea, …).
+    """
+    if "," in location:
+        city, state_code = location.split(",", 1)
+        city = city.strip()
+        state_code = state_code.strip()
+    else:
+        city = location
+        state_code = ""
+
     headers = {
         "X-RapidAPI-Key": rapidapi_key,
-        "X-RapidAPI-Host": ZILLOW_HOST,
+        "X-RapidAPI-Host": API_HOST,
     }
     params = {
-        "location": location,
-        "status_type": "ForSale",
-        "home_type": "Houses",
-        "bedsMin": min_beds,
-        "bathsMin": min_baths,
-        "sort": "Newest",
+        "city": city,
+        "state_code": state_code,
+        "limit": str(FREE_TIER_LIMIT),
+        "sort": "newest",
     }
+    if min_beds:
+        params["min_beds"] = str(min_beds)
+    if min_baths:
+        params["min_baths"] = str(min_baths)
     if max_price:
-        params["price_max"] = max_price
+        params["price_max"] = str(max_price)
 
     out = []
     for page in range(1, max_pages + 1):
-        params["page"] = page
-        r = requests.get(ZILLOW_URL, headers=headers, params=params, timeout=30)
+        params["offset"] = str((page - 1) * FREE_TIER_LIMIT)
+        r = requests.get(API_URL, headers=headers, params=params, timeout=30)
         if r.status_code != 200:
-            print(f"  ! Zillow page {page} returned HTTP {r.status_code}: {r.text[:200]}",
+            print(f"  ! API page {page} returned HTTP {r.status_code}: {r.text[:200]}",
                   file=sys.stderr)
             break
-        page_props = r.json().get("props", []) or []
-        if not page_props:
+
+        data = r.json()
+        hs = data.get("data", {}).get("home_search")
+        if not hs or not hs.get("results"):
             break
-        out.extend(page_props)
+
+        page_props = hs["results"]
+        for prop in page_props:
+            desc = prop.get("description", {}) or {}
+            loc = prop.get("location", {}).get("address", {}) or {}
+            coord = loc.get("coordinate", {}) or {}
+
+            addr_parts = [loc.get("line", ""), loc.get("city", ""),
+                          loc.get("state_code", "")]
+            address = ", ".join(p for p in addr_parts if p)
+
+            out.append({
+                "price": prop.get("list_price"),
+                "bedrooms": desc.get("beds"),
+                "bathrooms": desc.get("baths"),
+                "livingArea": desc.get("sqft"),
+                "lotAreaValue": desc.get("lot_sqft"),
+                "lotAreaUnit": "sqft",
+                "latitude": coord.get("lat"),
+                "longitude": coord.get("lon"),
+                "address": address or prop.get("permalink", ""),
+                "imgSrc": (prop.get("primary_photo") or {}).get("href"),
+                "property_id": prop.get("property_id"),
+            })
+
         print(f"  page {page}: +{len(page_props)} (total {len(out)})")
+
     return out
 
 
@@ -173,6 +214,13 @@ def score_properties(props: list[dict],
 # Email
 # ---------------------------------------------------------------------------
 
+def build_zillow_url(prop: dict) -> str:
+    pid = prop.get("property_id")
+    if pid:
+        return f"https://www.zillow.com/homes/{pid}_zpid/"
+    return "#"
+
+
 def render_html(top: list[dict], cfg: dict, anchors_named: dict) -> str:
     today = datetime.now().strftime("%A, %B %d, %Y")
     parts = [f"""<html><body style="font-family:-apple-system,BlinkMacSystemFont,
@@ -194,8 +242,7 @@ Ranked by lowest $/sqft, largest lot, and proximity to the midpoint of your anch
         beds = p.get("bedrooms", "—")
         baths = p.get("bathrooms", "—")
         sqft = p.get("livingArea") or 0
-        zpid = p.get("zpid", "")
-        url = f"https://www.zillow.com/homedetails/{zpid}_zpid/" if zpid else "#"
+        url = build_zillow_url(p)
         img = p.get("imgSrc", "")
 
         parts.append(f"""
@@ -279,7 +326,6 @@ def main() -> int:
 
     ranked = score_properties(props, anchors, names, cfg["weights"])
 
-    # Optional hard cap on midpoint distance
     max_mid = cfg.get("max_distance_to_midpoint")
     if max_mid:
         before = len(ranked)
@@ -295,7 +341,6 @@ def main() -> int:
         "Church":  church_addr,
     })
 
-    # Always send something — even an empty-result email is useful signal
     send_email(html, cfg)
     print("Email sent ✓")
     return 0

@@ -1,0 +1,46 @@
+# =============================================================================
+# Daily Property Feed — configuration
+# Edit anything below; everything else lives in code or GitHub Secrets.
+# =============================================================================
+
+# Search area passed to Zillow. Use a city, ZIP, or "City, ST".
+# Examples: "Dallas, TX", "Richardson, TX", "75080", "Garland, TX"
+search_location: "Dallas, TX"
+
+# Hard filters applied at the API level
+min_beds: 3
+min_baths: 2
+max_price: 600000        # set to null for no price cap
+
+# How many result pages to pull (each ~40 listings, rate limit applies)
+max_pages: 3
+
+# Anchor addresses — geocoded each morning to your three reference points.
+# Replace the school with your preferred high school for the 11th/12th grader.
+# Other good options near UTD: J.J. Pearce HS, Berkner HS, or for top-ranked:
+# "School for the Talented and Gifted, 1201 E 8th St, Dallas, TX 75203".
+anchors:
+  school:  "Richardson High School, 1250 W Belt Line Rd, Richardson, TX 75080"
+  college: "University of Texas at Dallas, 800 W Campbell Rd, Richardson, TX 75080"
+  church:  "New Testament Church, John West Rd, Dallas, TX"
+
+# Scoring weights — must sum to ~1.0
+# Bump price_per_sqft higher to favor "cheapest per square foot"
+# Bump lot_size higher to favor biggest lots
+# Bump midpoint higher to favor properties closest to the centroid of all three anchors
+# Bump avg_distance higher to favor properties reasonably close to ALL anchors (not just the centroid)
+weights:
+  price_per_sqft: 0.35
+  lot_size:       0.25
+  midpoint:       0.20
+  avg_distance:   0.20
+
+# Optional: discard anything farther than this many miles from the midpoint.
+# Set to null to disable.
+max_distance_to_midpoint: 15
+
+# How many listings to include in the daily email
+top_n: 10
+
+# Where to send the daily digest
+email_to: "your-email@example.com"

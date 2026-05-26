@@ -1,0 +1,35 @@
+name: Daily Property Feed
+
+on:
+  schedule:
+    # 12:00 UTC = 7:00 AM Central (CDT) / 6:00 AM Central (CST)
+    - cron: '0 12 * * *'
+  workflow_dispatch:  # manual run button in the Actions tab
+
+jobs:
+  send-feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily feed
+        env:
+          RAPIDAPI_KEY:  ${{ secrets.RAPIDAPI_KEY }}
+          SMTP_HOST:     ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
+        run: python daily_feed.py

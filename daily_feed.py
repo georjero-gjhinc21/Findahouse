@@ -63,15 +63,15 @@ def centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
 
 API_HOST = "us-real-estate.p.rapidapi.com"
 API_URL = f"https://{API_HOST}/v3/for-sale"
-FREE_TIER_LIMIT = 42  # max results per page on the free plan
 
 def search_properties(location: str, min_beds: int, min_baths: int,
                       max_price: int | None, max_pages: int,
                       rapidapi_key: str) -> list[dict]:
     """Search for-sale listings via the US Real Estate RapidAPI.
 
-    Returns a list of property dicts normalized to the field names the
-    rest of the pipeline expects (price, bedrooms, livingArea, …).
+    The API doesn't support server-side bed/bath filters, so we fetch
+    with only a price cap and filter locally.  Free tier returns at most
+    42 results per request.
     """
     if "," in location:
         city, state_code = location.split(",", 1)
@@ -88,56 +88,56 @@ def search_properties(location: str, min_beds: int, min_baths: int,
     params = {
         "city": city,
         "state_code": state_code,
-        "limit": str(FREE_TIER_LIMIT),
+        "limit": "42",
         "sort": "newest",
     }
-    if min_beds:
-        params["min_beds"] = str(min_beds)
-    if min_baths:
-        params["min_baths"] = str(min_baths)
-    if max_price:
-        params["price_max"] = str(max_price)
+    r = requests.get(API_URL, headers=headers, params=params, timeout=30)
+    if r.status_code != 200:
+        print(f"  ! API returned HTTP {r.status_code}: {r.text[:200]}",
+              file=sys.stderr)
+        return []
 
-    out = []
-    for page in range(1, max_pages + 1):
-        params["offset"] = str((page - 1) * FREE_TIER_LIMIT)
-        r = requests.get(API_URL, headers=headers, params=params, timeout=30)
-        if r.status_code != 200:
-            print(f"  ! API page {page} returned HTTP {r.status_code}: {r.text[:200]}",
-                  file=sys.stderr)
-            break
+    data = r.json()
+    hs = data.get("data", {}).get("home_search")
+    if not hs or not hs.get("results"):
+        print("  no results from API")
+        return []
 
-        data = r.json()
-        hs = data.get("data", {}).get("home_search")
-        if not hs or not hs.get("results"):
-            break
+    raw_count = 0
+    for prop in hs["results"]:
+        desc = prop.get("description", {}) or {}
+        loc = prop.get("location", {}).get("address", {}) or {}
+        coord = loc.get("coordinate", {}) or {}
 
-        page_props = hs["results"]
-        for prop in page_props:
-            desc = prop.get("description", {}) or {}
-            loc = prop.get("location", {}).get("address", {}) or {}
-            coord = loc.get("coordinate", {}) or {}
+        beds = desc.get("beds") or 0
+        baths = desc.get("baths") or 0
+        price = prop.get("list_price") or 0
+        raw_count += 1
 
-            addr_parts = [loc.get("line", ""), loc.get("city", ""),
-                          loc.get("state_code", "")]
-            address = ", ".join(p for p in addr_parts if p)
+        if beds < min_beds or baths < min_baths:
+            continue
+        if max_price and price > max_price:
+            continue
 
-            out.append({
-                "price": prop.get("list_price"),
-                "bedrooms": desc.get("beds"),
-                "bathrooms": desc.get("baths"),
-                "livingArea": desc.get("sqft"),
-                "lotAreaValue": desc.get("lot_sqft"),
-                "lotAreaUnit": "sqft",
-                "latitude": coord.get("lat"),
-                "longitude": coord.get("lon"),
-                "address": address or prop.get("permalink", ""),
-                "imgSrc": (prop.get("primary_photo") or {}).get("href"),
-                "property_id": prop.get("property_id"),
-            })
+        addr_parts = [loc.get("line", ""), loc.get("city", ""),
+                      loc.get("state_code", "")]
+        address = ", ".join(p for p in addr_parts if p)
 
-        print(f"  page {page}: +{len(page_props)} (total {len(out)})")
+        out.append({
+            "price": price,
+            "bedrooms": beds,
+            "bathrooms": baths,
+            "livingArea": desc.get("sqft"),
+            "lotAreaValue": desc.get("lot_sqft"),
+            "lotAreaUnit": "sqft",
+            "latitude": coord.get("lat"),
+            "longitude": coord.get("lon"),
+            "address": address or prop.get("permalink", ""),
+            "imgSrc": (prop.get("primary_photo") or {}).get("href"),
+            "property_id": prop.get("property_id"),
+        })
 
+    print(f"  {raw_count} raw → {len(out)} after bed/bath/price filter")
     return out
 
 
